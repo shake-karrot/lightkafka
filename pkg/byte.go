@@ -1,8 +1,18 @@
 package pkg
 
-import "unsafe"
+import "encoding/binary"
 
-/* Find the pointer of the first element of the byte slice */
-func ToUintptr(b []byte) uintptr {
-	return uintptr(unsafe.Pointer(&b[0]))
-}
+const (
+	// Size lengths (in bytes)
+	LenOffset   = 8
+	LenSize     = 4
+	LenCRC      = 4
+	LenMagic    = 1
+	LenAttr     = 2
+	LenEpoch    = 4
+	LenSequence = 4
+	LenCount    = 4
+)
+
+// Encoding alias (Kafka uses BigEndian)
+var Encod = binary.BigEndian
