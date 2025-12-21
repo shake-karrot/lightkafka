@@ -1,6 +1,7 @@
 package partition
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -128,25 +129,35 @@ func (p *Partition) Append(batchBytes []byte) (int64, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	currentOffset := p.activeSegment.NextOffset
+
+	// 배치 데이터의 맨 앞 8바이트(BaseOffset)를 실제 오프셋으로 덮어씀
+	if len(batchBytes) >= 8 {
+		binary.BigEndian.PutUint64(batchBytes[0:8], uint64(currentOffset))
+	} else {
+		return 0, fmt.Errorf("invalid batch data length: %d", len(batchBytes))
+	}
+
 	// 1. Try to append to the active segment
 	offset, err := p.activeSegment.Append(batchBytes)
 
 	// 2. Handle Segment Rolling
 	if err == segment.ErrSegmentFull {
+		// 롤링 할 때도 NextOffset은 보존됨
 		nextOffset := p.activeSegment.NextOffset
 
 		if err := p.activeSegment.Close(); err != nil {
 			return 0, err
 		}
 
-		fmt.Printf("[Partition %d] Rolling segment: %d -> %d\n", p.ID, p.activeSegment.BaseOffset, nextOffset)
+		fmt.Printf("[Partition %d] Rolling segment: BaseOffset %d -> New %d\n", p.ID, p.activeSegment.BaseOffset, nextOffset)
 
+		// 새 세그먼트 생성
 		newSeg, err := segment.NewSegment(p.Dir, nextOffset, p.Config.SegmentConfig)
 		if err != nil {
 			return 0, err
 		}
 
-		p.Segments = append(p.Segments, nextOffset)
 		p.activeSegment = newSeg
 
 		return p.activeSegment.Append(batchBytes)
