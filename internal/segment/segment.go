@@ -62,11 +62,14 @@ func (s *Segment) Append(batchBytes []byte) (int64, error) {
 		return 0, err
 	}
 
-	// Sparse Indexing: Write index for every batch (simplification)
-	// Real Kafka writes every 4KB
-	relOffset := int32(batch.Header.BaseOffset - s.BaseOffset)
-	if n > 0 {
-		_ = s.index.Write(relOffset, int32(pos))
+	// Sparse Indexing: Index first message or at intervals
+	// Always index the first message in the segment for quick access
+	if n > 0 && s.config.IndexIntervalBytes > 0 {
+		_, lastPos, _ := s.index.LastEntry()
+		if s.log.Size() == int64(n) || int64(pos)-int64(lastPos) >= s.config.IndexIntervalBytes {
+			relOffset := int32(batch.Header.BaseOffset - s.BaseOffset)
+			_ = s.index.Write(relOffset, int32(pos))
+		}
 	}
 
 	curr := s.NextOffset
@@ -127,55 +130,102 @@ func (s *Segment) Read(targetOffset int64, maxBytes int32) ([]byte, error) {
 	return s.log.ReadAt(currentPos, maxBytes)
 }
 
-// recover rebuilds state (NextOffset, Log Size) by scanning the log.
+// recover rebuilds state (NextOffset, Log Size) by scanning the log and reconstructing the index.
 func (s *Segment) recover() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.log.SetSize(s.log.configSize())
 
-	// 1. Get hints from index
-	_, lastPos, _ := s.index.LastEntry()
-	if int64(lastPos) > s.log.Size() {
-		lastPos = 0
+	// 1. Index file integrity check (Sanity Check)
+	validIndex := true
+	lastIdxOff, lastIdxPos, err := s.index.LastEntry()
+	if err != nil || int64(lastIdxPos) > s.log.Size() {
+		validIndex = false
 	}
 
-	// 2. Scan log to verify data integrity
-	currentPos := int64(lastPos)
+	// 2. Determine recovery starting position
+	var currentPos int64 = 0
+	if validIndex && lastIdxPos > 0 {
+		currentPos = int64(lastIdxPos)
+	} else {
+		if err := s.index.Truncate(0); err != nil {
+			return err
+		}
+	}
+
+	// 3. Log scanning
 	var lastNextOffset int64 = s.BaseOffset
 
-	for currentPos < s.log.configSize() { // note: check physical size
-		// Try reading header
-		header, err := s.log.ReadRaw(currentPos, 12)
-		if err != nil || len(header) < 12 {
+	var lastIndexedPos int64 = -1
+	// If we started from a valid index position, set it as last indexed
+	if validIndex && lastIdxPos > 0 {
+		lastIndexedPos = int64(lastIdxPos)
+		lastNextOffset = s.BaseOffset + int64(lastIdxOff)
+	}
+
+	for currentPos < s.log.configSize() {
+		// Read header (12 bytes: Offset + Length)
+		headerBuf, err := s.log.ReadRaw(currentPos, 12)
+		if err != nil || len(headerBuf) < 12 {
 			break
 		}
 
-		batchLen := int32(pkg.Encod.Uint32(header[8:12]))
+		// Check for zero padding (pre-allocated empty space)
+		batchLen := int32(pkg.Encod.Uint32(headerBuf[8:12]))
 		if batchLen == 0 {
-			// Found zero-padding (pre-allocated space)
 			break
 		}
 
-		totalSize := 12 + int64(batchLen)
+		totalBatchSize := 12 + int64(batchLen)
 
-		batchData, err := s.log.ReadRaw(currentPos, int(totalSize))
-		if err != nil || len(batchData) < int(totalSize) {
+		batchData, err := s.log.ReadRaw(currentPos, int(totalBatchSize))
+		if err != nil {
 			break
 		}
 
 		batch, err := message.DecodeBatch(batchData)
 		if err != nil {
+			// CRC mismatch or format error - this is the end of valid data
 			break
 		}
 
+		// Sparse indexing: index first batch or when interval exceeded
+		// Always index the first batch for quick segment access
+		shouldIndex := false
+		if s.config.IndexIntervalBytes > 0 {
+			if lastIndexedPos == -1 {
+				shouldIndex = true
+			} else if currentPos-lastIndexedPos >= s.config.IndexIntervalBytes {
+				// Interval exceeded
+				shouldIndex = true
+			}
+		}
+
+		if shouldIndex {
+			relOffset := int32(batch.Header.BaseOffset - s.BaseOffset)
+			if err := s.index.Write(relOffset, int32(currentPos)); err != nil {
+				return err
+			}
+			lastIndexedPos = currentPos
+		}
+
 		lastNextOffset = batch.Header.BaseOffset + int64(batch.Header.RecordsCount)
-		currentPos += totalSize
+		currentPos += totalBatchSize
 	}
 
-	// 3. Restore State
-	s.NextOffset = lastNextOffset
+	// 4. Truncate log to valid size
+	// Remove invalid data (partially written data, zero-filled regions)
 	s.log.SetSize(currentPos)
+	s.NextOffset = lastNextOffset
 
-	fmt.Printf("Recovered Segment %d: NextOffset=%d, ValidSize=%d\n", s.BaseOffset, s.NextOffset, currentPos)
+	indexEntries := int64(0)
+	if s.index.size > 0 {
+		indexEntries = s.index.size / 8
+	}
+
+	fmt.Printf("Recovered Segment %d: NextOffset=%d, ValidBytes=%d, IndexEntries=%d\n",
+		s.BaseOffset, s.NextOffset, currentPos, indexEntries)
+
 	return nil
 }
 
