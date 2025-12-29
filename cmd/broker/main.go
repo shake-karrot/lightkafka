@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"lightkafka/internal/broker"
 	"lightkafka/internal/partition"
@@ -27,6 +28,13 @@ func main() {
 		log.Fatalf("Failed to initialize partition: %v", err)
 	}
 	defer p.Close()
+
+	fmt.Println("[Init] Starting Retention Cleaner...")
+	retentionInterval := time.Duration(cfg.PartitionConfig.RetentionCheckIntervalMs) * time.Millisecond
+	cleaner := partition.NewRetentionCleaner(retentionInterval)
+	cleaner.Register(p)
+	cleaner.Start()
+	defer cleaner.Stop()
 
 	brk := broker.NewBroker(cfg, p)
 

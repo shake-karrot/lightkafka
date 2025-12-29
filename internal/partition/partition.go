@@ -163,6 +163,7 @@ func (p *Partition) Append(batchBytes []byte) (int64, error) {
 		}
 
 		p.activeSegment = newSeg
+		p.Segments = append(p.Segments, nextOffset)
 
 		return p.activeSegment.Append(batchBytes)
 	}
