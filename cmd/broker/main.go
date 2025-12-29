@@ -10,34 +10,25 @@ import (
 	"lightkafka/internal/broker"
 	"lightkafka/internal/partition"
 	"lightkafka/internal/resource"
-	"lightkafka/internal/segment"
 )
 
 func main() {
-	segConfig := segment.Config{
-		SegmentMaxBytes: 10 * 1024 * 1024, // 10MB per segment
-		IndexMaxBytes:   100 * 1024,       // 100KB index
-		BaseDir:         "./data",         // Data directory
-	}
-
-	partitionConfig := partition.PartitionConfig{
-		SegmentConfig: segConfig,
-	}
-
-	listenAddr := ":9092" // Kafka Standard Port
+	cfg := broker.DefaultConfig()
+	cfg.PartitionConfig.SegmentConfig.SegmentMaxBytes = 10 * 1024 * 1024 // 10MB per segment (for testing)
+	cfg.PartitionConfig.SegmentConfig.IndexMaxBytes = 100 * 1024         // 100KB index
 
 	fmt.Println("[Init] Initializing Resource Cache...")
 	resCache := resource.NewSegmentCache(50)
 	defer resCache.Close()
 
 	fmt.Println("[Init] Initializing Partition Storage...")
-	p, err := partition.NewPartition(segConfig.BaseDir, "events", 0, partitionConfig, resCache)
+	p, err := partition.NewPartition(cfg.BaseDir, "events", 0, cfg.PartitionConfig, resCache)
 	if err != nil {
 		log.Fatalf("Failed to initialize partition: %v", err)
 	}
 	defer p.Close()
 
-	brk := broker.NewBroker(broker.Config{ListenAddr: listenAddr}, p)
+	brk := broker.NewBroker(cfg, p)
 
 	go func() {
 		if err := brk.Start(); err != nil {
