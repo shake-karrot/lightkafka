@@ -79,6 +79,21 @@ func (c *SegmentCache) evict() {
 	_ = item.seg.Close()
 }
 
+func (c *SegmentCache) Evict(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	elem, ok := c.items[key]
+	if !ok {
+		return
+	}
+
+	c.lruList.Remove(elem)
+	item := elem.Value.(*cacheItem)
+	delete(c.items, item.key)
+	_ = item.seg.Close()
+}
+
 func (c *SegmentCache) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

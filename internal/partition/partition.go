@@ -9,8 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
-	"lightkafka/internal/resource" // Import Resource
+	"lightkafka/internal/resource"
 	"lightkafka/internal/segment"
 )
 
@@ -25,6 +26,9 @@ type Partition struct {
 	// Segments stores the BaseOffsets of all segments in this partition.
 	// We only store offsets here (metadata), not the File handles.
 	Segments []int64
+
+	// logStartOffset is the earliest readable offset (set by deleteRecords API)
+	logStartOffset int64
 
 	// activeSegment is the current segment being written to.
 	// It is always kept open and NOT managed by the LRU cache.
@@ -227,4 +231,153 @@ func (p *Partition) Close() error {
 		}
 	}
 	return nil
+}
+
+func (p *Partition) DeleteOldSegments() int {
+	deleted := 0
+	deleted += p.deleteLogStartOffsetBreachedSegments()
+	deleted += p.deleteRetentionMsBreachedSegments()
+	deleted += p.deleteRetentionSizeBreachedSegments()
+	return deleted
+}
+
+func (p *Partition) SetLogStartOffset(offset int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if offset > p.logStartOffset {
+		p.logStartOffset = offset
+	}
+}
+
+func (p *Partition) LogStartOffset() int64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.logStartOffset
+}
+
+func (p *Partition) deleteLogStartOffsetBreachedSegments() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.logStartOffset == 0 {
+		return 0
+	}
+
+	deleted := 0
+	for len(p.Segments) > 1 {
+		baseOffset := p.Segments[0]
+		if baseOffset == p.activeSegment.BaseOffset {
+			break
+		}
+
+		nextBaseOffset := p.Segments[1]
+		if nextBaseOffset > p.logStartOffset {
+			break
+		}
+
+		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
+		if err != nil {
+			break
+		}
+
+		if err := seg.Delete(); err != nil {
+			break
+		}
+
+		p.cache.Evict(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
+		p.Segments = p.Segments[1:]
+		deleted++
+		fmt.Printf("[Partition %d] Deleted segment %d (logStartOffset)\n", p.ID, baseOffset)
+	}
+
+	return deleted
+}
+
+func (p *Partition) deleteRetentionMsBreachedSegments() int {
+	if p.Config.RetentionMs < 0 {
+		return 0
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	nowMs := time.Now().UnixMilli()
+	deleted := 0
+
+	for len(p.Segments) > 1 {
+		baseOffset := p.Segments[0]
+		if baseOffset == p.activeSegment.BaseOffset {
+			break
+		}
+
+		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
+		if err != nil {
+			break
+		}
+
+		if nowMs-seg.LargestTimestamp <= p.Config.RetentionMs {
+			seg.Close()
+			break
+		}
+
+		if err := seg.Delete(); err != nil {
+			break
+		}
+
+		p.cache.Evict(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
+		p.Segments = p.Segments[1:]
+		deleted++
+		fmt.Printf("[Partition %d] Deleted segment %d (retention.ms)\n", p.ID, baseOffset)
+	}
+
+	return deleted
+}
+
+func (p *Partition) deleteRetentionSizeBreachedSegments() int {
+	if p.Config.RetentionBytes < 0 {
+		return 0
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var totalSize int64
+	for _, baseOffset := range p.Segments {
+		if baseOffset == p.activeSegment.BaseOffset {
+			totalSize += p.activeSegment.Size()
+		} else {
+			seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
+			if err != nil {
+				continue
+			}
+			totalSize += seg.Size()
+			seg.Close()
+		}
+	}
+
+	deleted := 0
+	for len(p.Segments) > 1 && totalSize > p.Config.RetentionBytes {
+		baseOffset := p.Segments[0]
+		if baseOffset == p.activeSegment.BaseOffset {
+			break
+		}
+
+		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
+		if err != nil {
+			break
+		}
+
+		segSize := seg.Size()
+		if err := seg.Delete(); err != nil {
+			break
+		}
+
+		p.cache.Evict(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
+		p.Segments = p.Segments[1:]
+		totalSize -= segSize
+		deleted++
+		fmt.Printf("[Partition %d] Deleted segment %d (retention.bytes)\n", p.ID, baseOffset)
+	}
+
+	return deleted
 }

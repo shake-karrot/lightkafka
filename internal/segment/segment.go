@@ -10,9 +10,10 @@ import (
 )
 
 type Segment struct {
-	mu         sync.RWMutex
-	BaseOffset int64
-	NextOffset int64
+	mu               sync.RWMutex
+	BaseOffset       int64
+	NextOffset       int64
+	LargestTimestamp int64 // max timestamp in this segment (ms)
 
 	log    *Log
 	index  *Index
@@ -67,6 +68,10 @@ func (s *Segment) Append(batchBytes []byte) (int64, error) {
 	relOffset := int32(batch.Header.BaseOffset - s.BaseOffset)
 	if n > 0 {
 		_ = s.index.Write(relOffset, int32(pos))
+	}
+
+	if batch.Header.MaxTimestamp > s.LargestTimestamp {
+		s.LargestTimestamp = batch.Header.MaxTimestamp
 	}
 
 	curr := s.NextOffset
@@ -168,6 +173,9 @@ func (s *Segment) recover() error {
 		}
 
 		lastNextOffset = batch.Header.BaseOffset + int64(batch.Header.RecordsCount)
+		if batch.Header.MaxTimestamp > s.LargestTimestamp {
+			s.LargestTimestamp = batch.Header.MaxTimestamp
+		}
 		currentPos += totalSize
 	}
 
@@ -185,4 +193,20 @@ func (s *Segment) Close() error {
 	_ = s.index.Close()
 	_ = s.log.Close()
 	return nil
+}
+
+func (s *Segment) Size() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.log.Size()
+}
+
+func (s *Segment) Delete() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.index.Delete(); err != nil {
+		return err
+	}
+	return s.log.Delete()
 }
