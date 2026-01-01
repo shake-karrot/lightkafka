@@ -191,17 +191,17 @@ func (s *Segment) recover() error {
 
 		// Sparse indexing: index first batch or when interval exceeded
 		// Always index the first batch for quick segment access
-		shouldIndex := false
+		reachedIndexThreshold := false
 		if s.config.IndexIntervalBytes > 0 {
 			if lastIndexedPos == -1 {
-				shouldIndex = true
+				reachedIndexThreshold = true
 			} else if currentPos-lastIndexedPos >= s.config.IndexIntervalBytes {
 				// Interval exceeded
-				shouldIndex = true
+				reachedIndexThreshold = true
 			}
 		}
 
-		if shouldIndex {
+		if reachedIndexThreshold {
 			relOffset := int32(batch.Header.BaseOffset - s.BaseOffset)
 			if err := s.index.Write(relOffset, int32(currentPos)); err != nil {
 				return err
