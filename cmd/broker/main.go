@@ -15,9 +15,10 @@ import (
 
 func main() {
 	segConfig := segment.Config{
-		SegmentMaxBytes: 10 * 1024 * 1024, // 10MB per segment
-		IndexMaxBytes:   100 * 1024,       // 100KB index
-		BaseDir:         "./data",         // Data directory
+		SegmentMaxBytes:    10 * 1024 * 1024, // 10MB per segment
+		IndexMaxBytes:      100 * 1024,       // 100KB index
+		BaseDir:            "./data",         // Data directory
+		IndexIntervalBytes: 4 * 1024,         // 4KB - index every 4KB of log data
 	}
 
 	partitionConfig := partition.PartitionConfig{
