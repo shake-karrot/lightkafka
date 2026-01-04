@@ -2,16 +2,15 @@ package main
 
 import (
 	"fmt"
+	"lightkafka/internal/broker"
+	"lightkafka/internal/partition"
+	"lightkafka/internal/resource"
+	"lightkafka/internal/retention"
+	"lightkafka/internal/segment"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
-
-	"lightkafka/internal/broker"
-	"lightkafka/internal/partition"
-	"lightkafka/internal/resource"
-	"lightkafka/internal/segment"
 )
 
 func main() {
@@ -27,6 +26,9 @@ func main() {
 			RetentionBytes:    -1,                      // unlimited
 			FileDelayDeleteMs: 60 * 1000,               // 60 seconds
 		},
+		CleanerConfig: retention.CleanerConfig{
+			RetentionCheckIntervalMs: 5 * 60 * 1000, // 5 minutes
+		},
 	}
 
 	fmt.Println("[Init] Initializing Resource Cache...")
@@ -41,8 +43,7 @@ func main() {
 	defer p.Close()
 
 	fmt.Println("[Init] Starting Retention Cleaner...")
-	retentionInterval := time.Duration(cfg.PartitionConfig.RetentionCheckIntervalMs) * time.Millisecond
-	cleaner := partition.NewRetentionCleaner(retentionInterval)
+	cleaner := retention.NewRetentionCleaner(cfg.CleanerConfig)
 	cleaner.Register(p)
 	cleaner.Start()
 	defer cleaner.Stop()

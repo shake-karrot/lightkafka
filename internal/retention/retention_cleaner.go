@@ -1,27 +1,32 @@
-package partition
+package retention
 
 import (
+	"lightkafka/internal/partition"
 	"sync"
 	"time"
 )
 
+type CleanerConfig struct {
+	RetentionCheckIntervalMs int64
+}
+
 type RetentionCleaner struct {
 	mu         sync.Mutex
-	partitions []*Partition
-	interval   time.Duration
+	partitions []*partition.Partition
+	config     CleanerConfig
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
 }
 
-func NewRetentionCleaner(interval time.Duration) *RetentionCleaner {
+func NewRetentionCleaner(config CleanerConfig) *RetentionCleaner {
 	return &RetentionCleaner{
-		partitions: make([]*Partition, 0),
-		interval:   interval,
+		partitions: make([]*partition.Partition, 0),
+		config:     config,
 		stopCh:     make(chan struct{}),
 	}
 }
 
-func (rc *RetentionCleaner) Register(p *Partition) {
+func (rc *RetentionCleaner) Register(p *partition.Partition) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.partitions = append(rc.partitions, p)
@@ -35,7 +40,8 @@ func (rc *RetentionCleaner) Start() {
 func (rc *RetentionCleaner) run() {
 	defer rc.wg.Done()
 
-	ticker := time.NewTicker(rc.interval)
+	interval := time.Duration(rc.config.RetentionCheckIntervalMs) * time.Millisecond
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -50,7 +56,7 @@ func (rc *RetentionCleaner) run() {
 
 func (rc *RetentionCleaner) cleanupAll() {
 	rc.mu.Lock()
-	partitions := make([]*Partition, len(rc.partitions))
+	partitions := make([]*partition.Partition, len(rc.partitions))
 	copy(partitions, rc.partitions)
 	rc.mu.Unlock()
 

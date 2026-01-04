@@ -1,6 +1,7 @@
-package partition
+package retention
 
 import (
+	"lightkafka/internal/partition"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,15 +11,14 @@ import (
 	"lightkafka/internal/segment"
 )
 
-func testConfig() PartitionConfig {
-	return PartitionConfig{
+func testConfig() partition.PartitionConfig {
+	return partition.PartitionConfig{
 		SegmentConfig: segment.Config{
 			SegmentMaxBytes: 1024,
 			IndexMaxBytes:   512,
 		},
-		RetentionMs:              1000,
-		RetentionBytes:           -1,
-		RetentionCheckIntervalMs: 100,
+		RetentionMs:    1000,
+		RetentionBytes: -1,
 	}
 }
 
@@ -89,7 +89,7 @@ func TestRetentionCleaner_Register(t *testing.T) {
 	defer cache.Close()
 
 	cfg := testConfig()
-	p, err := NewPartition(tmpDir, "test", 0, cfg, cache)
+	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestPartition_DeleteRetentionMsBreached(t *testing.T) {
 	cfg.SegmentConfig.SegmentMaxBytes = 150
 	cfg.RetentionMs = 500
 
-	p, err := NewPartition(tmpDir, "test", 0, cfg, cache)
+	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestPartition_DeleteLogStartOffsetBreached(t *testing.T) {
 	cfg.SegmentConfig.SegmentMaxBytes = 150
 	cfg.RetentionMs = -1
 
-	p, err := NewPartition(tmpDir, "test", 0, cfg, cache)
+	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestPartition_DeleteRetentionSizeBreached(t *testing.T) {
 	cfg.RetentionMs = -1
 	cfg.RetentionBytes = 100
 
-	p, err := NewPartition(tmpDir, "test", 0, cfg, cache)
+	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestPartition_DeleteOldSegments(t *testing.T) {
 	cfg.RetentionMs = -1
 	cfg.RetentionBytes = -1
 
-	p, err := NewPartition(tmpDir, "test", 0, cfg, cache)
+	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestRetentionCleaner_CleanupAll(t *testing.T) {
 	cfg.RetentionMs = -1
 	cfg.RetentionBytes = -1
 
-	p, err := NewPartition(tmpDir, "test", 0, cfg, cache)
+	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestSegmentFilesDeleted(t *testing.T) {
 	cfg.RetentionMs = -1
 	cfg.RetentionBytes = 200
 
-	p, err := NewPartition(tmpDir, "test", 0, cfg, cache)
+	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
