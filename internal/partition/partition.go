@@ -3,6 +3,8 @@ package partition
 import (
 	"encoding/binary"
 	"fmt"
+	"lightkafka/internal/resource"
+	"lightkafka/internal/segment"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,9 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"lightkafka/internal/resource"
-	"lightkafka/internal/segment"
 )
 
 // Partition manages a sequential list of segments.
@@ -242,20 +241,6 @@ func (p *Partition) DeleteOldSegments() int {
 	return deleted
 }
 
-func (p *Partition) SetLogStartOffset(offset int64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if offset > p.logStartOffset {
-		p.logStartOffset = offset
-	}
-}
-
-func (p *Partition) LogStartOffset() int64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.logStartOffset
-}
-
 func (p *Partition) deleteLogStartOffsetBreachedSegments() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -271,27 +256,15 @@ func (p *Partition) deleteLogStartOffsetBreachedSegments() int {
 			break
 		}
 
+		// 다음 세그먼트가 logStartOffset보다 작거나 같으면 현재 0번은 삭제 대상
 		nextBaseOffset := p.Segments[1]
-		if nextBaseOffset > p.logStartOffset {
+		if nextBaseOffset <= p.logStartOffset {
+			p.delete(baseOffset, "logStartOffset")
+			deleted++
+		} else {
 			break
 		}
-
-		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
-		if err != nil {
-			break
-		}
-
-		p.cache.Remove(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
-
-		if err := seg.Delete(); err != nil {
-			break
-		}
-
-		p.Segments = p.Segments[1:]
-		deleted++
-		fmt.Printf("[Partition %d] Deleted segment %d (logStartOffset)\n", p.ID, baseOffset)
 	}
-
 	return deleted
 }
 
@@ -312,27 +285,21 @@ func (p *Partition) deleteRetentionMsBreachedSegments() int {
 			break
 		}
 
+		// 판단을 위해 임시로 로드 (LargestTimestamp 확인용)
 		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
 		if err != nil {
 			break
 		}
 
-		if nowMs-seg.LargestTimestamp <= p.Config.RetentionMs {
+		if nowMs-seg.LargestTimestamp > p.Config.RetentionMs {
+			seg.Close() // 판단 완료 후 닫기
+			p.delete(baseOffset, "retention.ms")
+			deleted++
+		} else {
 			seg.Close()
 			break
 		}
-
-		p.cache.Remove(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
-
-		if err := seg.Delete(); err != nil {
-			break
-		}
-
-		p.Segments = p.Segments[1:]
-		deleted++
-		fmt.Printf("[Partition %d] Deleted segment %d (retention.ms)\n", p.ID, baseOffset)
 	}
-
 	return deleted
 }
 
@@ -344,20 +311,21 @@ func (p *Partition) deleteRetentionSizeBreachedSegments() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// 1. 현재 전체 사이즈 계산
 	var totalSize int64
 	for _, baseOffset := range p.Segments {
 		if baseOffset == p.activeSegment.BaseOffset {
 			totalSize += p.activeSegment.Size()
 		} else {
 			seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
-			if err != nil {
-				continue
+			if err == nil {
+				totalSize += seg.Size()
+				seg.Close()
 			}
-			totalSize += seg.Size()
-			seg.Close()
 		}
 	}
 
+	// 2. 사이즈 초과 시 가장 오래된 것부터 삭제
 	deleted := 0
 	for len(p.Segments) > 1 && totalSize > p.Config.RetentionBytes {
 		baseOffset := p.Segments[0]
@@ -365,23 +333,37 @@ func (p *Partition) deleteRetentionSizeBreachedSegments() int {
 			break
 		}
 
+		// 사이즈 차감을 위해 임시 로드
 		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
 		if err != nil {
 			break
 		}
-
 		segSize := seg.Size()
-		p.cache.Remove(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
+		seg.Close()
 
-		if err := seg.Delete(); err != nil {
-			break
-		}
-
-		p.Segments = p.Segments[1:]
+		p.delete(baseOffset, "retention.bytes")
 		totalSize -= segSize
 		deleted++
-		fmt.Printf("[Partition %d] Deleted segment %d (retention.bytes)\n", p.ID, baseOffset)
 	}
-
 	return deleted
+}
+
+// 공통 삭제 집행 메서드
+func (p *Partition) delete(baseOffset int64, reason string) {
+	// 1. 메모리 리스트에서 즉시 제거
+	p.Segments = p.Segments[1:]
+
+	// 2. 캐시에서 즉시 제거 (물리 삭제 전 Read 접근 차단)
+	cacheKey := fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset)
+	p.cache.Remove(cacheKey)
+
+	// 3. 지연 물리 파일 삭제 (카프카 Delay Delete 방식)
+	delay := time.Duration(p.Config.FileDelayDeleteMs) * time.Millisecond
+	time.AfterFunc(delay, func() {
+		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
+		if err == nil {
+			_ = seg.Delete()
+			fmt.Printf("[Partition %d] Permanently deleted segment %d (Reason: %s)\n", p.ID, baseOffset, reason)
+		}
+	})
 }
