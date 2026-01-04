@@ -122,8 +122,8 @@ func (i *Index) Truncate(size int64) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	if err := i.file.Truncate(size); err != nil {
-		return err
+	if size > int64(len(i.data)) {
+		return io.ErrShortBuffer
 	}
 
 	i.size = size

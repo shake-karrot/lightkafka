@@ -21,6 +21,7 @@ func main() {
 			SegmentConfig: segment.Config{
 				SegmentMaxBytes: 10 * 1024 * 1024, // 10MB per segment
 				IndexMaxBytes:   100 * 1024,       // 100KB index
+        IndexIntervalBytes: 4 * 1024,         // 4KB - index every 4KB of log data
 			},
 			RetentionMs:       7 * 24 * 60 * 60 * 1000, // 7 days
 			RetentionBytes:    -1,                      // unlimited
