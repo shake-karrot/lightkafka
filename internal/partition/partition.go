@@ -281,11 +281,12 @@ func (p *Partition) deleteLogStartOffsetBreachedSegments() int {
 			break
 		}
 
+		p.cache.Evict(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
+
 		if err := seg.Delete(); err != nil {
 			break
 		}
 
-		p.cache.Evict(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
 		p.Segments = p.Segments[1:]
 		deleted++
 		fmt.Printf("[Partition %d] Deleted segment %d (logStartOffset)\n", p.ID, baseOffset)
@@ -321,11 +322,12 @@ func (p *Partition) deleteRetentionMsBreachedSegments() int {
 			break
 		}
 
+		p.cache.Evict(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
+
 		if err := seg.Delete(); err != nil {
 			break
 		}
 
-		p.cache.Evict(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
 		p.Segments = p.Segments[1:]
 		deleted++
 		fmt.Printf("[Partition %d] Deleted segment %d (retention.ms)\n", p.ID, baseOffset)
@@ -369,11 +371,12 @@ func (p *Partition) deleteRetentionSizeBreachedSegments() int {
 		}
 
 		segSize := seg.Size()
+		p.cache.Evict(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
+
 		if err := seg.Delete(); err != nil {
 			break
 		}
 
-		p.cache.Evict(fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset))
 		p.Segments = p.Segments[1:]
 		totalSize -= segSize
 		deleted++
