@@ -17,8 +17,9 @@ func testConfig() partition.PartitionConfig {
 			SegmentMaxBytes: 1024,
 			IndexMaxBytes:   512,
 		},
-		RetentionMs:    1000,
-		RetentionBytes: -1,
+		RetentionMs:       1000,
+		RetentionBytes:    -1,
+		FileDelayDeleteMs: 0,
 	}
 }
 
@@ -72,7 +73,7 @@ func computeCRC(data []byte) uint32 {
 }
 
 func TestRetentionCleaner_StartStop(t *testing.T) {
-	rc := NewRetentionCleaner(50 * time.Millisecond)
+	rc := NewRetentionCleaner(CleanerConfig{RetentionCheckIntervalMs: 50})
 	rc.Start()
 	time.Sleep(100 * time.Millisecond)
 	rc.Stop()
@@ -95,7 +96,7 @@ func TestRetentionCleaner_Register(t *testing.T) {
 	}
 	defer p.Close()
 
-	rc := NewRetentionCleaner(50 * time.Millisecond)
+	rc := NewRetentionCleaner(CleanerConfig{RetentionCheckIntervalMs: 50})
 	rc.Register(p)
 
 	if len(rc.partitions) != 1 {
@@ -103,8 +104,8 @@ func TestRetentionCleaner_Register(t *testing.T) {
 	}
 }
 
-func TestPartition_DeleteRetentionMsBreached(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "retention_ms_test")
+func TestRetentionCleaner_Integration_RetentionMs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "retention_integration_ms_test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,8 @@ func TestPartition_DeleteRetentionMsBreached(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.SegmentConfig.SegmentMaxBytes = 150
-	cfg.RetentionMs = 500
+	cfg.RetentionMs = 100
+	cfg.FileDelayDeleteMs = 0
 
 	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
 	if err != nil {
@@ -123,183 +125,46 @@ func TestPartition_DeleteRetentionMsBreached(t *testing.T) {
 	}
 	defer p.Close()
 
-	oldTimestamp := time.Now().UnixMilli() - 1000
-	batch1 := createTestBatch(oldTimestamp)
-	if _, err := p.Append(batch1); err != nil {
-		t.Fatal(err)
-	}
-
-	batch2 := createTestBatch(oldTimestamp)
-	if _, err := p.Append(batch2); err != nil {
-		t.Fatal(err)
+	oldTimestamp := time.Now().UnixMilli() - 500
+	for i := 0; i < 3; i++ {
+		batch := createTestBatch(oldTimestamp)
+		if _, err := p.Append(batch); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	newTimestamp := time.Now().UnixMilli()
-	batch3 := createTestBatch(newTimestamp)
-	if _, err := p.Append(batch3); err != nil {
+	batch := createTestBatch(newTimestamp)
+	if _, err := p.Append(batch); err != nil {
 		t.Fatal(err)
 	}
 
 	segmentsBefore := len(p.Segments)
-	deleted := p.deleteRetentionMsBreachedSegments()
-
 	if segmentsBefore <= 1 {
 		t.Skip("not enough segments rolled for this test")
 	}
 
-	if deleted == 0 {
-		t.Log("no segments deleted (may be expected if segment didn't roll)")
-	}
-}
-
-func TestPartition_DeleteLogStartOffsetBreached(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "log_start_offset_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cache := resource.NewSegmentCache(10)
-	defer cache.Close()
-
-	cfg := testConfig()
-	cfg.SegmentConfig.SegmentMaxBytes = 150
-	cfg.RetentionMs = -1
-
-	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer p.Close()
-
-	ts := time.Now().UnixMilli()
-	for i := 0; i < 5; i++ {
-		batch := createTestBatch(ts)
-		if _, err := p.Append(batch); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	segmentsBefore := len(p.Segments)
-	if segmentsBefore <= 1 {
-		t.Skip("not enough segments for this test")
-	}
-
-	p.SetLogStartOffset(p.Segments[1])
-
-	deleted := p.deleteLogStartOffsetBreachedSegments()
-	if deleted == 0 {
-		t.Error("expected at least 1 segment to be deleted")
-	}
-
-	if len(p.Segments) >= segmentsBefore {
-		t.Errorf("segments not reduced: before=%d, after=%d", segmentsBefore, len(p.Segments))
-	}
-}
-
-func TestPartition_DeleteRetentionSizeBreached(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "retention_size_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cache := resource.NewSegmentCache(10)
-	defer cache.Close()
-
-	cfg := testConfig()
-	cfg.SegmentConfig.SegmentMaxBytes = 150
-	cfg.RetentionMs = -1
-	cfg.RetentionBytes = 100
-
-	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer p.Close()
-
-	ts := time.Now().UnixMilli()
-	for i := 0; i < 5; i++ {
-		batch := createTestBatch(ts)
-		if _, err := p.Append(batch); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	segmentsBefore := len(p.Segments)
-	if segmentsBefore <= 1 {
-		t.Skip("not enough segments for this test")
-	}
-
-	deleted := p.deleteRetentionSizeBreachedSegments()
-
-	t.Logf("segments before: %d, deleted: %d, remaining: %d", segmentsBefore, deleted, len(p.Segments))
-}
-
-func TestPartition_DeleteOldSegments(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "delete_old_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cache := resource.NewSegmentCache(10)
-	defer cache.Close()
-
-	cfg := testConfig()
-	cfg.SegmentConfig.SegmentMaxBytes = 150
-	cfg.RetentionMs = -1
-	cfg.RetentionBytes = -1
-
-	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer p.Close()
-
-	ts := time.Now().UnixMilli()
-	for i := 0; i < 3; i++ {
-		batch := createTestBatch(ts)
-		if _, err := p.Append(batch); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	deleted := p.DeleteOldSegments()
-	if deleted != 0 {
-		t.Errorf("expected 0 deletions with retention disabled, got %d", deleted)
-	}
-}
-
-func TestRetentionCleaner_CleanupAll(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "cleanup_all_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cache := resource.NewSegmentCache(10)
-	defer cache.Close()
-
-	cfg := testConfig()
-	cfg.SegmentConfig.SegmentMaxBytes = 150
-	cfg.RetentionMs = -1
-	cfg.RetentionBytes = -1
-
-	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer p.Close()
-
-	rc := NewRetentionCleaner(50 * time.Millisecond)
+	rc := NewRetentionCleaner(CleanerConfig{RetentionCheckIntervalMs: 50})
 	rc.Register(p)
+	rc.Start()
 
-	rc.cleanupAll()
+	time.Sleep(150 * time.Millisecond)
+	rc.Stop()
+
+	time.Sleep(50 * time.Millisecond)
+
+	segmentsAfter := len(p.Segments)
+	if segmentsAfter >= segmentsBefore {
+		t.Errorf("expected segments to be deleted: before=%d, after=%d", segmentsBefore, segmentsAfter)
+	}
+
+	partDir := filepath.Join(tmpDir, "test-0")
+	files, _ := os.ReadDir(partDir)
+	t.Logf("segments before: %d, after: %d, files remaining: %d", segmentsBefore, segmentsAfter, len(files))
 }
 
-func TestSegmentFilesDeleted(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "segment_files_test")
+func TestRetentionCleaner_Integration_RetentionBytes(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "retention_integration_bytes_test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,6 +177,7 @@ func TestSegmentFilesDeleted(t *testing.T) {
 	cfg.SegmentConfig.SegmentMaxBytes = 150
 	cfg.RetentionMs = -1
 	cfg.RetentionBytes = 200
+	cfg.FileDelayDeleteMs = 0
 
 	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
 	if err != nil {
@@ -327,16 +193,155 @@ func TestSegmentFilesDeleted(t *testing.T) {
 		}
 	}
 
+	segmentsBefore := len(p.Segments)
+	if segmentsBefore <= 1 {
+		t.Skip("not enough segments for this test")
+	}
+
 	partDir := filepath.Join(tmpDir, "test-0")
 	filesBefore, _ := os.ReadDir(partDir)
 	countBefore := len(filesBefore)
 
-	p.deleteRetentionSizeBreachedSegments()
+	rc := NewRetentionCleaner(CleanerConfig{RetentionCheckIntervalMs: 50})
+	rc.Register(p)
+	rc.Start()
 
+	time.Sleep(150 * time.Millisecond)
+	rc.Stop()
+
+	time.Sleep(50 * time.Millisecond)
+
+	segmentsAfter := len(p.Segments)
 	filesAfter, _ := os.ReadDir(partDir)
 	countAfter := len(filesAfter)
 
-	if countAfter >= countBefore && len(p.Segments) > 1 {
-		t.Logf("files before: %d, after: %d", countBefore, countAfter)
+	if segmentsAfter >= segmentsBefore {
+		t.Errorf("expected segments to be deleted: before=%d, after=%d", segmentsBefore, segmentsAfter)
 	}
+
+	if countAfter >= countBefore {
+		t.Errorf("expected files to be deleted: before=%d, after=%d", countBefore, countAfter)
+	}
+
+	t.Logf("segments: %d->%d, files: %d->%d", segmentsBefore, segmentsAfter, countBefore, countAfter)
+}
+
+func TestRetentionCleaner_Integration_NoDeleteWhenDisabled(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "retention_integration_disabled_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cache := resource.NewSegmentCache(10)
+	defer cache.Close()
+
+	cfg := testConfig()
+	cfg.SegmentConfig.SegmentMaxBytes = 150
+	cfg.RetentionMs = -1
+	cfg.RetentionBytes = -1
+	cfg.FileDelayDeleteMs = 0
+
+	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	ts := time.Now().UnixMilli()
+	for i := 0; i < 5; i++ {
+		batch := createTestBatch(ts)
+		if _, err := p.Append(batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	segmentsBefore := len(p.Segments)
+	if segmentsBefore <= 1 {
+		t.Skip("not enough segments for this test")
+	}
+
+	rc := NewRetentionCleaner(CleanerConfig{RetentionCheckIntervalMs: 50})
+	rc.Register(p)
+	rc.Start()
+
+	time.Sleep(150 * time.Millisecond)
+	rc.Stop()
+
+	segmentsAfter := len(p.Segments)
+	if segmentsAfter != segmentsBefore {
+		t.Errorf("expected no segments to be deleted when retention disabled: before=%d, after=%d", segmentsBefore, segmentsAfter)
+	}
+}
+
+func TestRetentionCleaner_Integration_FilesActuallyDeleted(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "retention_files_deleted_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cache := resource.NewSegmentCache(10)
+	defer cache.Close()
+
+	cfg := testConfig()
+	cfg.SegmentConfig.SegmentMaxBytes = 150
+	cfg.RetentionMs = 50
+	cfg.FileDelayDeleteMs = 0
+
+	p, err := partition.NewPartition(tmpDir, "test", 0, cfg, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	oldTimestamp := time.Now().UnixMilli() - 500
+	for i := 0; i < 4; i++ {
+		batch := createTestBatch(oldTimestamp)
+		if _, err := p.Append(batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	newTimestamp := time.Now().UnixMilli()
+	batch := createTestBatch(newTimestamp)
+	if _, err := p.Append(batch); err != nil {
+		t.Fatal(err)
+	}
+
+	partDir := filepath.Join(tmpDir, "test-0")
+	filesBefore, _ := os.ReadDir(partDir)
+	logFilesBefore := countLogFiles(filesBefore)
+
+	if logFilesBefore <= 1 {
+		t.Skip("not enough log files for this test")
+	}
+
+	rc := NewRetentionCleaner(CleanerConfig{RetentionCheckIntervalMs: 30})
+	rc.Register(p)
+	rc.Start()
+
+	time.Sleep(200 * time.Millisecond)
+	rc.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	filesAfter, _ := os.ReadDir(partDir)
+	logFilesAfter := countLogFiles(filesAfter)
+
+	if logFilesAfter >= logFilesBefore {
+		t.Errorf("expected .log files to be deleted: before=%d, after=%d", logFilesBefore, logFilesAfter)
+	}
+
+	t.Logf("log files: %d -> %d (deleted %d)", logFilesBefore, logFilesAfter, logFilesBefore-logFilesAfter)
+}
+
+func countLogFiles(entries []os.DirEntry) int {
+	count := 0
+	for _, e := range entries {
+		if !e.IsDir() && len(e.Name()) > 4 && e.Name()[len(e.Name())-4:] == ".log" {
+			count++
+		}
+	}
+	return count
 }
