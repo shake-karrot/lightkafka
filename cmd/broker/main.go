@@ -11,12 +11,23 @@ import (
 	"lightkafka/internal/broker"
 	"lightkafka/internal/partition"
 	"lightkafka/internal/resource"
+	"lightkafka/internal/segment"
 )
 
 func main() {
-	cfg := broker.DefaultConfig()
-	cfg.PartitionConfig.SegmentConfig.SegmentMaxBytes = 10 * 1024 * 1024 // 10MB per segment (for testing)
-	cfg.PartitionConfig.SegmentConfig.IndexMaxBytes = 100 * 1024         // 100KB index
+	cfg := broker.Config{
+		ListenAddr: ":9092",
+		BaseDir:    "./data",
+		PartitionConfig: partition.PartitionConfig{
+			SegmentConfig: segment.Config{
+				SegmentMaxBytes: 10 * 1024 * 1024, // 10MB per segment
+				IndexMaxBytes:   100 * 1024,       // 100KB index
+			},
+			RetentionMs:              7 * 24 * 60 * 60 * 1000, // 7 days
+			RetentionBytes:           -1,                      // unlimited
+			RetentionCheckIntervalMs: 5 * 60 * 1000,           // 5 minutes
+		},
+	}
 
 	fmt.Println("[Init] Initializing Resource Cache...")
 	resCache := resource.NewSegmentCache(50)

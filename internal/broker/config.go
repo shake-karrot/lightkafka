@@ -8,11 +8,3 @@ type Config struct {
 	BaseDir         string
 	PartitionConfig partition.PartitionConfig
 }
-
-func DefaultConfig() Config {
-	return Config{
-		ListenAddr:      ":9092",
-		BaseDir:         "./data",
-		PartitionConfig: partition.DefaultConfig(),
-	}
-}

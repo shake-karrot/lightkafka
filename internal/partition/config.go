@@ -9,13 +9,3 @@ type PartitionConfig struct {
 	RetentionBytes           int64
 	RetentionCheckIntervalMs int64
 }
-
-func DefaultConfig() PartitionConfig {
-	return PartitionConfig{
-		SegmentConfig: segment.DefaultConfig(),
-
-		RetentionMs:              7 * 24 * 60 * 60 * 1000, // 7 days
-		RetentionBytes:           -1,                      // unlimited
-		RetentionCheckIntervalMs: 5 * 60 * 1000,           // 5 minutes
-	}
-}
