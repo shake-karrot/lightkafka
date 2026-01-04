@@ -79,7 +79,7 @@ func (c *SegmentCache) evict() {
 	_ = item.seg.Close()
 }
 
-func (c *SegmentCache) Evict(key string) {
+func (c *SegmentCache) Remove(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
