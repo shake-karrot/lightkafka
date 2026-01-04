@@ -348,22 +348,18 @@ func (p *Partition) deleteRetentionSizeBreachedSegments() int {
 	return deleted
 }
 
-// 공통 삭제 집행 메서드
 func (p *Partition) delete(baseOffset int64, reason string) {
-	// 1. 메모리 리스트에서 즉시 제거
 	p.Segments = p.Segments[1:]
 
-	// 2. 캐시에서 즉시 제거 (물리 삭제 전 Read 접근 차단)
 	cacheKey := fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset)
 	p.cache.Remove(cacheKey)
 
-	// 3. 지연 물리 파일 삭제 (카프카 Delay Delete 방식)
+	// 지연 물리 삭제
 	delay := time.Duration(p.Config.FileDelayDeleteMs) * time.Millisecond
 	time.AfterFunc(delay, func() {
-		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
+		err := segment.RemoveFiles(p.Dir, baseOffset)
 		if err == nil {
-			_ = seg.Delete()
-			fmt.Printf("[Partition %d] Permanently deleted segment %d (Reason: %s)\n", p.ID, baseOffset, reason)
+			fmt.Printf("[Partition %d] Permanently deleted segment files %d (%s)\n", p.ID, baseOffset, reason)
 		}
 	})
 }
