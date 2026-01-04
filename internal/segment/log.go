@@ -152,10 +152,3 @@ func (l *Log) Close() error {
 	_ = l.file.Truncate(l.size) // Trim to actual data size
 	return l.file.Close()
 }
-
-func (l *Log) Delete() error {
-	path := l.file.Name()
-	_ = syscall.Munmap(l.data)
-	_ = l.file.Close()
-	return os.Remove(path)
-}

@@ -129,10 +129,3 @@ func (i *Index) Truncate(size int64) error {
 	i.size = size
 	return nil
 }
-
-func (i *Index) Delete() error {
-	path := i.file.Name()
-	_ = syscall.Munmap(i.data)
-	_ = i.file.Close()
-	return os.Remove(path)
-}

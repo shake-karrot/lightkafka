@@ -200,13 +200,3 @@ func (s *Segment) Size() int64 {
 	defer s.mu.RUnlock()
 	return s.log.Size()
 }
-
-func (s *Segment) Delete() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := s.index.Delete(); err != nil {
-		return err
-	}
-	return s.log.Delete()
-}

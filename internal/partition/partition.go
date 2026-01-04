@@ -245,7 +245,7 @@ func (p *Partition) deleteLogStartOffsetBreachedSegments() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.logStartOffset == 0 {
+	if p.logStartOffset <= 0 {
 		return 0
 	}
 
@@ -285,10 +285,17 @@ func (p *Partition) deleteRetentionMsBreachedSegments() int {
 			break
 		}
 
-		// 판단을 위해 임시로 로드 (LargestTimestamp 확인용)
-		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
+		loader := func() (*segment.Segment, error) {
+			return segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
+		}
+
+		cacheKey := fmt.Sprintf("%s-%d-%d", p.Topic, p.ID, baseOffset)
+		seg, err := p.cache.GetOrLoad(cacheKey, loader)
 		if err != nil {
-			break
+			if os.IsNotExist(err) {
+				p.Segments = p.Segments[1:]
+			}
+			continue
 		}
 
 		if nowMs-seg.LargestTimestamp > p.Config.RetentionMs {
@@ -311,21 +318,20 @@ func (p *Partition) deleteRetentionSizeBreachedSegments() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// 1. 현재 전체 사이즈 계산
+	// 전체 사이즈 계산
 	var totalSize int64
 	for _, baseOffset := range p.Segments {
 		if baseOffset == p.activeSegment.BaseOffset {
 			totalSize += p.activeSegment.Size()
-		} else {
-			seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
-			if err == nil {
-				totalSize += seg.Size()
-				seg.Close()
-			}
+			continue
+		}
+		logPath := filepath.Join(p.Dir, fmt.Sprintf("%020d.log", baseOffset))
+		if info, err := os.Stat(logPath); err == nil {
+			totalSize += info.Size()
 		}
 	}
 
-	// 2. 사이즈 초과 시 가장 오래된 것부터 삭제
+	// 용량 초과분 순차 삭제
 	deleted := 0
 	for len(p.Segments) > 1 && totalSize > p.Config.RetentionBytes {
 		baseOffset := p.Segments[0]
@@ -333,14 +339,16 @@ func (p *Partition) deleteRetentionSizeBreachedSegments() int {
 			break
 		}
 
-		// 사이즈 차감을 위해 임시 로드
-		seg, err := segment.NewSegment(p.Dir, baseOffset, p.Config.SegmentConfig)
+		logPath := filepath.Join(p.Dir, fmt.Sprintf("%020d.log", baseOffset))
+		info, err := os.Stat(logPath)
 		if err != nil {
-			break
+			if os.IsNotExist(err) {
+				p.Segments = p.Segments[1:]
+			}
+			continue
 		}
-		segSize := seg.Size()
-		seg.Close()
 
+		segSize := info.Size()
 		p.delete(baseOffset, "retention.bytes")
 		totalSize -= segSize
 		deleted++
